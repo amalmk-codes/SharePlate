@@ -60,6 +60,20 @@ export default function App() {
   const [pledge, setPledge] = useState({ needId: "n1", name: "", quantity: "" });
   const [pickupCode, setPickupCode] = useState("");
   const [selectedFood, setSelectedFood] = useState("");
+  // SP_RESCUE_RADAR_IMPACT_V1: location preference for demo matching
+  const [radarLocation, setRadarLocation] = useState("");
+  // SP_GUIDE_UPGRADE_V1: first-visit onboarding and local natural-language helper
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    try { return localStorage.getItem("shareplate_onboarding_complete_v1") !== "yes"; }
+    catch { return false; }
+  });
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantInput, setAssistantInput] = useState("");
+  const [assistantMessages, setAssistantMessages] = useState([
+    { role: "assistant", text: "Hi! I’m SharePlate Guide. Tell me what you want to do, for example: ‘I have 10 meals to donate.’ I can prepare the right form for you." }
+  ]);
+  const [userRole, setUserRole] = useState("donor");
+
 
   useEffect(() => {
     try {
@@ -172,13 +186,103 @@ export default function App() {
     flash("Demo data reset.");
   }
 
-  const nav = ["Dashboard", "Food Rescue", "Buy & Donate", "Organizations", "Track Donations"];
+  // SP_GUIDE_UPGRADE_V1
+  function finishOnboarding(role = userRole, destination = "Dashboard") {
+    setUserRole(role);
+    try {
+      localStorage.setItem("shareplate_onboarding_complete_v1", "yes");
+      localStorage.setItem("shareplate_user_role_v1", role);
+    } catch { /* The guide still works for this session if storage is disabled. */ }
+    setShowOnboarding(false);
+    setPage(destination);
+    if (destination !== "Dashboard") setAssistantOpen(false);
+  }
+
+  function interpretSharePlateMessage(rawText) {
+    const text = rawText.toLowerCase().trim();
+    const amountMatch = text.match(/\b(\d{1,4})\b/);
+    const amount = amountMatch ? amountMatch[1] : "";
+    const mealWord = /\b(meals?|meal boxes?|portions?|servings?)\b/.test(text);
+    const bakeryWord = /\b(bread|buns?|bakery|sandwich(?:es)?)\b/.test(text);
+    const fruitWord = /\b(fruit|fruits|banana|bananas|apple|apples|orange|oranges)\b/.test(text);
+    const vegetableWord = /\b(vegetables?|veggies|carrots?|potatoes?|tomatoes?)\b/.test(text);
+    const packagedWord = /\b(packaged|canned|tinned)\b/.test(text);
+    const wantsDonate = /\b(donat|donation|give away|share|surplus|leftover|extra food|i have|we have|offer food)\b/.test(text);
+    const wantsFind = /\b(find food|need food|looking for food|request food|available food|food rescue|hungry)\b/.test(text);
+    const wantsOrg = /\b(organization|organisation|ngo|charity|community group|food bank)\b/.test(text);
+    const wantsTrack = /\b(track|tracking|my donation|donation status|pickup status|collection status)\b/.test(text);
+    const wantsPledge = /\b(pledge|buy for|support an organization|support an organisation|contribute money|food needs)\b/.test(text);
+
+    if (wantsDonate) {
+      let category = "Other";
+      let name = "Surplus food donation";
+      if (mealWord) { category = "Cooked Meals"; name = "Fresh meal donation"; }
+      else if (bakeryWord) { category = "Bakery"; name = "Bakery food donation"; }
+      else if (fruitWord) { category = "Fruits"; name = "Fresh fruit donation"; }
+      else if (vegetableWord) { category = "Vegetables"; name = "Fresh vegetable donation"; }
+      else if (packagedWord) { category = "Packaged Food"; name = "Packaged food donation"; }
+      const unit = mealWord ? "meals" : bakeryWord ? "pieces" : fruitWord ? "pieces" : vegetableWord ? "kg" : "items";
+      return { type: "donate", category, name, quantity: amount ? `${amount} ${unit}` : "", reply: `I’ll open the donation form${amount ? ` and fill in ${amount} ${unit}` : ""}. Please add your donor name, pickup location, availability deadline, and any ingredient/storage details before publishing.` };
+    }
+    if (wantsFind) return { type: "find", reply: "I’ll take you to Food Rescue, where you can search listings, filter by category, and request available food." };
+    if (wantsOrg) return { type: "orgs", reply: "I’ll open Organizations so you can explore the sample community partners and their listed needs." };
+    if (wantsTrack) return { type: "track", reply: "I’ll open Track Donations to review demo food requests, pickups, and pledges saved in this browser." };
+    if (wantsPledge) return { type: "pledge", reply: "I’ll open Buy & Donate. Choose an organization need and record a demo pledge. No payment is taken." };
+    if (/\b(hello|hi|hey|help|start|how do i use|what can you do)\b/.test(text)) {
+      return { type: "help", reply: "I can guide you to the right place. Try ‘I have 10 meals to donate’, ‘I need food’, ‘Find an NGO’, ‘I want to support rice needs’, or ‘Track my donation’. This helper runs locally and does not call an external AI service." };
+    }
+    return { type: "help", reply: "I’m not sure which workflow you mean yet. Try ‘I have 10 meals to donate’, ‘Find food’, ‘Find organizations’, ‘Support an organization’, or ‘Track donations’. This is a local intent-based helper, not a cloud AI model." };
+  }
+
+  function sendAssistantMessage(e) {
+    e.preventDefault();
+    const message = assistantInput.trim();
+    if (!message) return;
+    const result = interpretSharePlateMessage(message);
+    setAssistantMessages(messages => [
+      ...messages,
+      { role: "user", text: message },
+      { role: "assistant", text: result.reply }
+    ]);
+    setAssistantInput("");
+
+    if (result.type === "donate") {
+      setDonation(current => ({
+        ...current,
+        name: result.name || current.name,
+        quantity: result.quantity || current.quantity,
+        category: result.category || current.category,
+        description: current.description || "Please add ingredients, preparation time, storage conditions, and collection notes."
+      }));
+      setPage("Donate Food");
+      setAssistantOpen(false);
+    } else if (result.type === "find") {
+      setPage("Food Rescue");
+      setAssistantOpen(false);
+    } else if (result.type === "orgs") {
+      setPage("Organizations");
+      setAssistantOpen(false);
+    } else if (result.type === "track") {
+      setPage("Track Donations");
+      setAssistantOpen(false);
+    } else if (result.type === "pledge") {
+      setPage("Buy & Donate");
+      setAssistantOpen(false);
+    }
+  }
+
+  function reopenGuide() {
+    setShowOnboarding(true);
+    setAssistantOpen(false);
+  }
+
+  const nav = ["Dashboard", "Food Rescue", "Rescue Radar", "Buy & Donate", "Organizations", "Track Donations", "Impact Passport"];
 
   return <div className="app">
     <aside className="sidebar">
       <a className="logo" href="#top" onClick={() => setPage("Dashboard")}><span>♧</span> SharePlate</a>
       <p className="nav-caption">WORKSPACE</p>
-      {nav.map((n, i) => <button key={n} className={`nav-item ${page === n ? "active" : ""}`} onClick={() => setPage(n)}><span>{["▦", "🍱", "🛒", "🤝", "♡"][i]}</span>{n}</button>)}
+      {nav.map((n, i) => <button key={n} className={`nav-item ${page === n ? "active" : ""}`} onClick={() => setPage(n)}><span>{["▦", "🍱", "✦", "🛒", "🤝", "♡", "✺"][i]}</span>{n}</button>)}
       <div className="sidebar-bottom">
         <div className="side-heart">💚</div>
         <strong>Share more. Waste less.</strong>
@@ -191,7 +295,7 @@ export default function App() {
     <main className="main" id="top">
       <header className="topbar">
         <div><span className="crumb">SHAREPLATE /</span><strong>{page}</strong></div>
-        <button className="top-action" onClick={() => setPage("Donate Food")}>＋ List food</button>
+        <div className="topbar-actions"><button className="top-quiet" onClick={() => setPage("Rescue Radar")}>✦ Rescue Radar</button><button className="top-action" onClick={() => setPage("Donate Food")}>＋ List food</button></div>
       </header>
 
       <section className="welcome">
@@ -201,6 +305,7 @@ export default function App() {
           <div className="welcome-actions">
             <button className="primary" onClick={() => setPage("Donate Food")}>＋ Donate surplus food</button>
             <button className="secondary" onClick={() => setPage("Buy & Donate")}>Support an organization ↗</button>
+            <button className="radar-hero-button" onClick={() => setPage("Rescue Radar")}>✦ Open Rescue Radar</button>
           </div>
         </div>
         <div className="welcome-art"><div className="art-circle">🥗</div><span className="art-bubble bubble-a">🌱 Less waste</span><span className="art-bubble bubble-b">💚 More hope</span></div>
@@ -272,6 +377,114 @@ export default function App() {
         <article className="panel tracking-panel"><h3>Surplus food tracking</h3>{foods.filter(f => ["Requested","Collected"].includes(f.status)).map(f => <div className="track-row" key={f.id}><span>🍱</span><div className="grow"><strong>{f.name}</strong><small>{f.donor} · {f.location}</small><div className="timeline"><i className="done"/> Listed <i className={f.status === "Collected" ? "done" : ""}/> Requested <i className={f.status === "Collected" ? "done" : ""}/> Collected</div></div><span className={`soft-pill ${f.status === "Collected" ? "delivered" : ""}`}>{f.status}</span></div>)}{!foods.some(f => ["Requested","Collected"].includes(f.status)) && <p className="hint">Your food requests will appear here.</p>}</article>
         <article className="panel tracking-panel"><h3>Buy-for-donation pledges</h3>{pledges.map(p => <div className="track-row" key={p.id}><span>🛒</span><div className="grow"><strong>{p.quantity} {p.unit} {p.item}</strong><small>{p.name} → {p.org}</small><div className="timeline"><i className="done"/> Pledged <i className={["Arranged","Delivered"].includes(p.status) ? "done" : ""}/> Arranged <i className={p.status === "Delivered" ? "done" : ""}/> Delivered</div></div><div className="status-action"><span className="soft-pill">{p.status}</span><button className="text-button" onClick={() => advancePledge(p.id)} disabled={p.status === "Delivered"}>{p.status === "Pledged" ? "Mark arranged" : p.status === "Arranged" ? "Mark delivered" : "Completed"}</button></div></div>)}{pledges.length === 0 && <p className="hint">Food pledges will appear here after you create one.</p>}</article>
         <p className="hint">Tracking updates are simulated by the person using this browser. Real organizations must verify receipt in a shared system.</p>
+      </section>}
+
+
+      {/* SP_RESCUE_RADAR_IMPACT_V1: Rescue Radar */}
+      {page === "Rescue Radar" && <section className="page-section radar-page">
+        <div className="radar-hero">
+          <div>
+            <span className="eyebrow radar-eyebrow">SHAREPLATE INTELLIGENCE</span>
+            <h2>Rescue Radar<span>.</span></h2>
+            <p>Find the next best rescue. Listings are ranked by urgency first, with a location match when you enter your town.</p>
+            <div className="radar-tags"><span>✦ Deadline-aware</span><span>⌖ Location-aware</span><span>♡ Community-first</span></div>
+          </div>
+          <div className="radar-orbit" aria-hidden="true"><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="orbit-core">🍃</div><span className="orbit-dot dot-one"/><span className="orbit-dot dot-two"/><span className="orbit-dot dot-three"/></div>
+        </div>
+        <div className="radar-controls panel">
+          <label><span>YOUR TOWN / AREA</span><input value={radarLocation} onChange={e => setRadarLocation(e.target.value)} placeholder="e.g. Thrissur or Irinjalakuda" /></label>
+          <div className="radar-live"><i/> {foods.filter(f => statusOf(f, now) === "Available").length} available listings scanned</div>
+          <button className="secondary" onClick={() => setRadarLocation("")}>Clear location</button>
+        </div>
+        <div className="radar-summary">
+          <article><span>01</span><strong>Urgency first</strong><small>Food with the shortest time remaining rises to the top.</small></article>
+          <article><span>02</span><strong>Local relevance</strong><small>Matching town names receive a location-match label.</small></article>
+          <article><span>03</span><strong>Actionable next step</strong><small>Request available food directly from a recommendation.</small></article>
+        </div>
+        <div className="radar-list-heading"><div><span className="eyebrow">YOUR RESCUE QUEUE</span><h3>Best opportunities right now</h3></div><span className="radar-count">{foods.filter(f => statusOf(f, now) === "Available").length} available</span></div>
+        <div className="radar-results">
+          {[...foods].filter(f => statusOf(f, now) === "Available").sort((a, b) => {
+            const aLocal = radarLocation.trim() && String(a.location || "").toLowerCase().includes(radarLocation.trim().toLowerCase()) ? 1 : 0;
+            const bLocal = radarLocation.trim() && String(b.location || "").toLowerCase().includes(radarLocation.trim().toLowerCase()) ? 1 : 0;
+            return bLocal - aLocal || Number(a.until) - Number(b.until);
+          }).map((f, index) => {
+            const localMatch = radarLocation.trim() && String(f.location || "").toLowerCase().includes(radarLocation.trim().toLowerCase());
+            const msLeft = Number(f.until) - now;
+            const urgency = msLeft <= 2 * 3600000 ? "Act soon" : msLeft <= 6 * 3600000 ? "Plan pickup" : "Time available";
+            const emoji = ({"Cooked Meals":"🍱","Bakery":"🥖","Fruits":"🍎","Vegetables":"🥦","Packaged Food":"🥫","Other":"🥗"})[f.category] || "🥗";
+            return <article className="radar-result" key={f.id}>
+              <div className="radar-rank">{String(index + 1).padStart(2, "0")}<small>PRIORITY</small></div>
+              <div className="radar-food-icon">{emoji}</div>
+              <div className="radar-result-main"><div className="radar-labels"><span className={msLeft <= 2 * 3600000 ? "urgent-label" : "normal-label"}>{urgency}</span>{localMatch && <span className="local-label">⌖ Matches your area</span>}</div><h3>{f.name}</h3><p>{f.donor} · {f.location} · {f.quantity}</p><small>{f.description}</small></div>
+              <div className="radar-deadline"><small>TIME LEFT</small><strong>{deadlineLabel(f.until, now)}</strong><button className="primary" onClick={() => requestFood(f.id)}>Request rescue →</button></div>
+            </article>;
+          })}
+          {!foods.some(f => statusOf(f, now) === "Available") && <div className="empty">No available listings right now. Check again later or list surplus food.</div>}
+        </div>
+        <p className="hint">Recommendation logic runs locally in this browser. Location matching uses the text you enter; it does not use GPS or calculate real distance.</p>
+      </section>}
+
+      {/* SP_RESCUE_RADAR_IMPACT_V1: Impact Passport */}
+      {page === "Impact Passport" && <section className="page-section impact-page">
+        <div className="passport-hero">
+          <div><span className="eyebrow">YOUR SHAREPLATE STORY</span><h2>Small acts.<br/><em>Lasting impact.</em></h2><p>Your Impact Passport collects the activity recorded in this browser demo. Real-world impact is not independently verified.</p></div>
+          <div className="passport-seal"><span>✦</span><strong>SHARE</strong><small>WITH CARE</small><span>♧</span></div>
+        </div>
+        <div className="passport-metrics">
+          <article><span>🍱</span><strong>{stats.collected}</strong><small>Food rescues completed</small></article>
+          <article><span>🤝</span><strong>{stats.pledges}</strong><small>Support pledges recorded</small></article>
+          <article><span>✓</span><strong>{stats.delivered}</strong><small>Pledges marked delivered</small></article>
+          <article><span>🌱</span><strong>{stats.listed}</strong><small>Listings created / seeded</small></article>
+        </div>
+        <div className="passport-columns">
+          <article className="panel passport-achievements"><span className="eyebrow">MILESTONE WALL</span><h3>Your community badges</h3>
+            <div className={`achievement ${stats.listed > 0 ? "earned" : ""}`}><span>🌱</span><div><strong>First seed</strong><small>Food listings are part of the rescue journey.</small></div><b>{stats.listed > 0 ? "UNLOCKED" : "LOCKED"}</b></div>
+            <div className={`achievement ${stats.requested + stats.collected > 0 ? "earned" : ""}`}><span>🧭</span><div><strong>Rescue explorer</strong><small>Record a food request or completed pickup.</small></div><b>{stats.requested + stats.collected > 0 ? "UNLOCKED" : "LOCKED"}</b></div>
+            <div className={`achievement ${stats.collected > 0 ? "earned" : ""}`}><span>💚</span><div><strong>Rescue in action</strong><small>Confirm at least one demo pickup.</small></div><b>{stats.collected > 0 ? "UNLOCKED" : "LOCKED"}</b></div>
+            <div className={`achievement ${stats.delivered > 0 ? "earned" : ""}`}><span>🏅</span><div><strong>Promise kept</strong><small>Mark a demo pledge as delivered.</small></div><b>{stats.delivered > 0 ? "UNLOCKED" : "LOCKED"}</b></div>
+          </article>
+          <article className="panel passport-history"><span className="eyebrow">ACTIVITY LOG</span><h3>Recent rescue activity</h3>
+            {[...foods.filter(f => ["Requested","Collected"].includes(f.status)).map(f => ({id:f.id, icon:"🍱", title:f.name, detail:`${f.donor} · ${f.location}`, status:f.status, created:f.created || 0})), ...pledges.map(p => ({id:p.id, icon:"🤝", title:`${p.quantity} ${p.unit} ${p.item}`, detail:`${p.name} · ${p.org}`, status:p.status, created:p.created || 0}))].sort((a,b) => b.created-a.created).slice(0,8).map(item => <div className="passport-history-row" key={item.id}><span>{item.icon}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div><b>{item.status}</b></div>)}
+            {!foods.some(f => ["Requested","Collected"].includes(f.status)) && pledges.length === 0 && <p className="hint">Your rescue and pledge activity will appear here as you use the demo.</p>}
+            <button className="primary full" onClick={() => setPage("Track Donations")}>Open full tracking →</button>
+          </article>
+        </div>
+        <div className="passport-share"><div><span className="eyebrow">KEEP THE GOOD GOING</span><h3>Your next action matters.</h3><p>Every listing and confirmed pickup helps demonstrate how a shared food-rescue workflow could work.</p></div><div className="passport-share-actions"><button className="primary" onClick={() => setPage("Donate Food")}>＋ List food</button><button className="secondary" onClick={() => setPage("Rescue Radar")}>Explore Rescue Radar ↗</button></div></div>
+        <p className="hint">Demo transparency: some initial listings are sample data. Counts are not equivalent to verified meals served, emissions avoided, or people helped.</p>
+      </section>}
+
+      {/* SP_GUIDE_UPGRADE_V1: onboarding modal */}
+      {showOnboarding && <div className="sp-guide-overlay" role="dialog" aria-modal="true" aria-labelledby="sp-guide-title">
+        <section className="sp-guide-modal">
+          <button className="sp-guide-close" type="button" aria-label="Close welcome guide" onClick={() => finishOnboarding(userRole, "Dashboard")}>×</button>
+          <div className="sp-guide-mark">🌱</div>
+          <span className="eyebrow">WELCOME TO SHAREPLATE</span>
+          <h2 id="sp-guide-title">Share more. Waste less.</h2>
+          <p className="sp-guide-intro">Choose what brings you here. We’ll point you to the right place and help you get started.</p>
+          <div className="sp-guide-roles">
+            <button type="button" className={`sp-guide-role ${userRole === "donor" ? "selected" : ""}`} onClick={() => setUserRole("donor")}><span>🍲</span><strong>I have food to share</strong><small>List surplus meals, bakery items or produce.</small></button>
+            <button type="button" className={`sp-guide-role ${userRole === "community" ? "selected" : ""}`} onClick={() => setUserRole("community")}><span>🤝</span><strong>I need food / represent a group</strong><small>Find available food and community partners.</small></button>
+            <button type="button" className={`sp-guide-role ${userRole === "supporter" ? "selected" : ""}`} onClick={() => setUserRole("supporter")}><span>💚</span><strong>I want to support</strong><small>Explore organization needs and track pledges.</small></button>
+          </div>
+          <div className="sp-guide-steps"><strong>Your quick start</strong><span><b>1</b> Choose your goal</span><span><b>2</b> Follow the guided form</span><span><b>3</b> Save your demo activity in this browser</span></div>
+          <div className="sp-guide-actions">
+            <button className="primary" type="button" onClick={() => finishOnboarding(userRole, userRole === "donor" ? "Donate Food" : userRole === "community" ? "Food Rescue" : "Buy & Donate")}>Start my guided workflow →</button>
+            <button className="secondary" type="button" onClick={() => { finishOnboarding(userRole, "Dashboard"); setAssistantOpen(true); }}>Ask SharePlate Guide</button>
+          </div>
+          <p className="sp-guide-note">Demo only: data is saved in this browser. Sample organizations are not verified, and no real payment or pickup is made.</p>
+        </section>
+      </div>}
+
+      {/* SP_GUIDE_UPGRADE_V1: floating assistant */}
+      <button className="sp-guide-launcher" type="button" onClick={() => setAssistantOpen(open => !open)} aria-label="Open SharePlate Guide">{assistantOpen ? "×" : "✦"}<span>{assistantOpen ? "Close guide" : "Ask SharePlate Guide"}</span></button>
+      {assistantOpen && <section className="sp-guide-chat" aria-label="SharePlate Guide assistant">
+        <header className="sp-guide-chat-head"><div className="sp-guide-avatar">✦</div><div><strong>SharePlate Guide</strong><small>Local workflow assistant · Demo mode</small></div><button type="button" onClick={() => setAssistantOpen(false)} aria-label="Close assistant">×</button></header>
+        <div className="sp-guide-chat-body" aria-live="polite">
+          {assistantMessages.map((message, index) => <div key={`${index}-${message.role}`} className={`sp-guide-message ${message.role}`}>{message.text}</div>)}
+          <div className="sp-guide-suggestions"><button type="button" onClick={() => setAssistantInput("I have 10 meals to donate")}>I have 10 meals to donate</button><button type="button" onClick={() => setAssistantInput("I need food")}>I need food</button><button type="button" onClick={() => setAssistantInput("Find an NGO")}>Find an NGO</button><button type="button" onClick={() => setAssistantInput("Track my donation")}>Track my donation</button></div>
+        </div>
+        <form className="sp-guide-chat-form" onSubmit={sendAssistantMessage}><input value={assistantInput} onChange={e => setAssistantInput(e.target.value)} aria-label="Message SharePlate Guide" placeholder="Tell me what you want to do…" maxLength={500}/><button className="primary" type="submit" aria-label="Send message">➤</button></form>
+        <button className="sp-guide-restart" type="button" onClick={reopenGuide}>Show first-time guide again</button>
       </section>}
 
       <footer className="footer"><strong>♧ SharePlate</strong><span>Share more. Waste less. Build a caring community.</span><small>Hackathon prototype · Demo data only</small></footer>
